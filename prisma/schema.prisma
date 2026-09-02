@@ -1,0 +1,401 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// USER & AUTHENTICATION
+
+model User {
+  id           String  @id @default(auto()) @map("_id") @db.ObjectId
+  email        String  @unique
+  name         String?
+  passwordHash String
+
+  // Authentication
+  emailVerified        DateTime? // Email verification timestamp 
+  verificationToken    String? // For email verification
+  passwordResetToken   String? // For password reset
+  passwordResetExpires DateTime? // Password reset token expiry
+  role                 UserRole  @default(USER)
+
+  // Plan & subscription
+  plan               Plan                @default(FREE) // FREE, PRO, PAY_PER_REPORT
+  subscriptionId     String?
+  stripeCustomerId   String?
+  subscriptionStatus SubscriptionStatus? @default(ACTIVE) // ACTIVE, CANCELLED, EXPIRED
+
+  subscriptionExpiresAt DateTime?
+
+  // Usage tracking
+  analysisCount       Int      @default(0) // Total analyses done
+  analysisLastResetAt DateTime @default(now()) // For monthly free tier reset
+  creditsRemaining    Int      @default(3) // For free tier
+
+  // Profile
+  profileCompleted  Boolean @default(false)
+  profilePictureUrl String?
+
+  // Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  // Relations
+  analyses      Analysis[]
+  subscriptions Subscription[]
+  coverLetters  CoverLetter[]
+  activityLogs  ActivityLog[]
+
+  @@index([stripeCustomerId])
+}
+
+enum Plan {
+  FREE
+  PRO
+  PAY_PER_REPORT
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+  PAST_DUE
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+model Subscription {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+  planType             Plan
+
+  status             SubscriptionStatus
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelledAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([stripeSubscriptionId])
+}
+
+// RESUME ANALYSIS
+model Analysis {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Resume data
+  resumeFileName String
+  resumeUrl      String // Supabase Storage URL
+  resumeText     String // Extracted text from PDF
+
+  // Job info
+  jobTitle       String?
+  targetCompany  String?
+  jobDescription String? // Pasted JD for match score
+
+  // Scores
+  atsScore           Int // 0-100
+  formattingScore    Int // 0-100
+  keywordScore       Int // 0-100
+  jobMatchPercentage Int? // 0-100, if JD provided
+
+  // Analysis data
+  keywords          KeywordAnalysis @relation(fields: [keywordAnalysisId], references: [id])
+  keywordAnalysisId String          @db.ObjectId
+
+  suggestions Suggestion[] // Array of improvement tips
+
+  // Generated content
+  coverLetters CoverLetter[]
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model KeywordAnalysis {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  // Found keywords
+  foundKeywords String[] // ["React", "TypeScript", ...]
+  foundCount    Int
+
+  // Missing keywords
+  missingKeywords String[] // ["Docker", "Kubernetes", ...]
+  missingCount    Int
+
+  // Keyword frequency
+  keywordFrequency Json // { "React": 5, "TypeScript": 3, ... }
+
+  // Relations
+  analyses Analysis[]
+
+  createdAt DateTime @default(now())
+}
+
+model Suggestion {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  analysisId String   @db.ObjectId
+  analysis   Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  title       String // "Add Docker and Kubernetes keywords"
+  description String // Full suggestion text
+  priority    Priority           @default(MEDIUM) // HIGH, MEDIUM, LOW
+  category    SuggestionCategory
+
+  createdAt DateTime @default(now())
+
+  @@index([analysisId])
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum SuggestionCategory {
+  KEYWORDS
+  FORMATTING
+  STRUCTURE
+  CONTENT
+  ATS_COMPATIBILITY
+}
+
+// COVER LETTER
+
+model CoverLetter {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  analysisId String   @db.ObjectId
+  analysis   Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  // Cover letter content
+  content String // Full generated cover letter
+  tone    Tone              @default(PROFESSIONAL) // PROFESSIONAL, CONFIDENT, FRIENDLY
+  length  CoverLetterLength @default(MEDIUM)
+
+  // Metadata
+  generatedBy String @default("groq-3.5-sonnet") // AI model used
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([analysisId])
+}
+
+enum Tone {
+  PROFESSIONAL
+  CONFIDENT
+  FRIENDLY
+  CREATIVE
+}
+
+enum CoverLetterLength {
+  SHORT // ~150 words
+  MEDIUM // ~250 words
+  LONG // ~400 words
+}
+
+// ============================================
+// FREELANCER PROFILE (NICHE FEATURE)
+// ============================================
+
+model FreelancerProfile {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  // Profile info
+  platform    Platform // UPWORK, FIVERR, FREELANCER
+  profileUrl  String
+  profileText String // Bio/description
+
+  // Metrics
+  hourlyRate    Float?
+  totalEarnings Float?
+  responseRate  Float?
+  successScore  Float?
+
+  // Analysis
+  remoteReadyScore Int // 0-100: how ready for remote jobs
+  suggestions      String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Platform {
+  UPWORK
+  FIVERR
+  FREELANCER
+  TOPTAL
+  GURU
+}
+
+// ============================================
+// ACTIVITY LOG (ANALYTICS)
+// ============================================
+
+model ActivityLog {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  action      ActivityAction
+  description String?
+  metadata    Json? // { resumeId: "...", atsScore: 87, ... }
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+enum ActivityAction {
+  RESUME_UPLOADED
+  RESUME_ANALYZED
+  SCORE_RECEIVED
+  COVER_LETTER_GENERATED
+  COVER_LETTER_COPIED
+  USER_UPGRADED
+  USER_DOWNGRADED
+  ACCOUNT_CREATED
+  LOGIN
+  LOGOUT
+  PROFILE_UPDATED
+  PAYMENT_PROCESSED
+  EXPORT_REPORT
+}
+
+// ============================================
+// PAYMENT & BILLING
+// ============================================
+
+model Payment {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  // Payment info
+  stripePaymentId String  @unique
+  stripeInvoiceId String?
+
+  amount        Float // In USD
+  currency      String        @default("USD")
+  status        PaymentStatus
+  paymentMethod String? // card, bank_transfer, etc
+
+  // Description
+  description String? // "Pro Plan - Monthly" or "Single Report"
+  planType    Plan
+
+  // Customer
+  customerEmail String
+
+  // Dates
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  paidAt    DateTime?
+
+  @@index([customerEmail])
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+// ============================================
+// FEATURE FLAGS & CONFIG
+// ============================================
+
+model FeatureFlag {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  name        String  @unique // "enable_freelancer_analyzer", "ai_model_v2"
+  description String?
+  enabled     Boolean @default(false)
+
+  // Rollout
+  rolloutPercentage Int @default(0) // 0-100: % of users who see this
+
+  // Config
+  config Json? // Any additional config
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================
+// FEEDBACK & SUPPORT
+// ============================================
+
+model Feedback {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  email    String
+  name     String?
+  message  String
+  rating   Int? // 1-5 stars
+  category FeedbackCategory
+
+  resolved Boolean @default(false)
+  response String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum FeedbackCategory {
+  BUG
+  FEATURE_REQUEST
+  IMPROVEMENT
+  GENERAL_FEEDBACK
+  SUPPORT
+}
+
+// ============================================
+// AUDIT LOG (FOR ADMIN)
+// ============================================
+
+model AuditLog {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  action     String // "user_created", "payment_processed", etc
+  entityType String // "User", "Payment", "Analysis"
+  entityId   String?
+
+  changes     Json? // { before: {...}, after: {...} }
+  performedBy String? // Admin user ID
+
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
