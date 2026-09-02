@@ -2,7 +2,6 @@ node_modules
 dist
 /generated/prisma
 .vercel
-.env
-.env.*
 logs/
 *.log
+config.bat
